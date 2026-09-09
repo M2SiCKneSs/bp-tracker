@@ -309,3 +309,13 @@ button:focus-visible {
   white-space: nowrap;
 }
 .data-table th { color: var(--text-dim); font-weight: 500; font-size: 0.8rem; }
+
+.status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 12px 0 0;
+  font-size: 0.85rem;
+}
+.status dt { color: var(--text-dim); }
+.status dd { margin: 0; font-weight: 600; }

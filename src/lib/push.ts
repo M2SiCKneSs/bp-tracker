@@ -16,6 +16,23 @@ function decodeKey(base64: string): Uint8Array {
   return Uint8Array.from(raw, (c) => c.charCodeAt(0))
 }
 
+function sameKey(stored: ArrayBuffer | null | undefined, current: Uint8Array): boolean {
+  if (!stored) return false
+  const bytes = new Uint8Array(stored)
+  return bytes.length === current.length && bytes.every((b, i) => b === current[i])
+}
+
+/**
+ * A PushSubscription is bound for life to the applicationServerKey it was created
+ * with. If the VAPID pair is ever rotated, an existing subscription keeps looking
+ * healthy locally while the push service rejects everything signed by the new
+ * private key — so it has to be detected and replaced, not reused.
+ */
+function isStale(sub: PushSubscription): boolean {
+  if (!VAPID_PUBLIC_KEY) return false
+  return !sameKey(sub.options.applicationServerKey, decodeKey(VAPID_PUBLIC_KEY))
+}
+
 let registration: ServiceWorkerRegistration | null = null
 
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration | null> {
@@ -29,11 +46,30 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
   return registration
 }
 
-export async function isSubscribed(): Promise<boolean> {
-  if (!pushSupported()) return false
-  const reg = await registerServiceWorker()
-  if (!reg) return false
-  return Boolean(await reg.pushManager.getSubscription())
+export interface PushStatus {
+  supported: boolean
+  configured: boolean
+  permission: NotificationPermission | 'unavailable'
+  subscribed: boolean
+  /** True when a subscription exists but was made with a superseded VAPID key. */
+  stale: boolean
+}
+
+export async function getStatus(): Promise<PushStatus> {
+  if (!pushSupported()) {
+    return { supported: false, configured: pushConfigured(), permission: 'unavailable', subscribed: false, stale: false }
+  }
+  const reg = await registerServiceWorker().catch(() => null)
+  const sub = await reg?.pushManager.getSubscription().catch(() => null)
+  const stale = sub ? isStale(sub) : false
+  return {
+    supported: true,
+    configured: pushConfigured(),
+    permission: Notification.permission,
+    // A stale subscription is reported as not subscribed: it cannot receive pushes.
+    subscribed: Boolean(sub) && !stale,
+    stale,
+  }
 }
 
 export type EnableResult = 'ok' | 'unsupported' | 'denied' | 'not-configured'
@@ -48,12 +84,20 @@ export async function enablePush(userId: string): Promise<EnableResult> {
   const reg = await registerServiceWorker()
   if (!reg) return 'unsupported'
 
-  const sub =
-    (await reg.pushManager.getSubscription()) ??
-    (await reg.pushManager.subscribe({
+  let sub = await reg.pushManager.getSubscription()
+
+  if (sub && isStale(sub)) {
+    await supabase.from('push_subscriptions').delete().eq('endpoint', sub.endpoint)
+    await sub.unsubscribe()
+    sub = null
+  }
+
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: decodeKey(VAPID_PUBLIC_KEY) as BufferSource,
-    }))
+    })
+  }
 
   const json = sub.toJSON()
   const { error } = await supabase.from('push_subscriptions').upsert(

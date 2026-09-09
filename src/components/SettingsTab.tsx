@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { detectTimezone } from '../lib/dates'
-import { disablePush, enablePush, isSubscribed, pushConfigured, pushSupported } from '../lib/push'
+import { disablePush, enablePush, getStatus, pushConfigured, pushSupported } from '../lib/push'
+import type { PushStatus } from '../lib/push'
 import { loadSettings, saveSettings } from '../lib/readings'
 import { functionsUrl, supabase } from '../lib/supabase'
 import { t } from '../lib/strings'
@@ -22,7 +23,7 @@ const fromHour = (h: number | null) => (h === null ? '' : String(h))
 
 export default function SettingsTab({ userId }: { userId: string }) {
   const [settings, setSettings] = useState<ReminderSettings | null>(null)
-  const [subscribed, setSubscribed] = useState(false)
+  const [status, setStatus] = useState<PushStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'error' | 'success' | 'info'; text: string } | null>(
     null,
@@ -30,17 +31,20 @@ export default function SettingsTab({ userId }: { userId: string }) {
 
   const supported = pushSupported() && pushConfigured()
 
+  const refreshStatus = useCallback(async () => {
+    setStatus(await getStatus().catch(() => null))
+  }, [])
+
   useEffect(() => {
     void (async () => {
       try {
-        const tz = detectTimezone()
-        setSettings(await loadSettings(userId, tz))
+        setSettings(await loadSettings(userId, detectTimezone()))
       } catch {
         setNotice({ kind: 'error', text: t.common.error })
       }
-      if (pushSupported()) setSubscribed(await isSubscribed().catch(() => false))
+      await refreshStatus()
     })()
-  }, [userId])
+  }, [userId, refreshStatus])
 
   async function toggleNotifications(next: boolean) {
     setBusy(true)
@@ -48,20 +52,15 @@ export default function SettingsTab({ userId }: { userId: string }) {
     try {
       if (next) {
         const result = await enablePush(userId)
-        if (result === 'ok') {
-          setSubscribed(true)
-        } else if (result === 'denied') {
-          setNotice({ kind: 'error', text: t.settings.denied })
-        } else {
-          setNotice({ kind: 'error', text: t.settings.unsupported })
-        }
+        if (result === 'denied') setNotice({ kind: 'error', text: t.settings.denied })
+        else if (result !== 'ok') setNotice({ kind: 'error', text: t.settings.unsupported })
       } else {
         await disablePush()
-        setSubscribed(false)
       }
-    } catch {
-      setNotice({ kind: 'error', text: t.common.error })
+    } catch (err) {
+      setNotice({ kind: 'error', text: `${t.common.error} ${(err as Error).message}` })
     } finally {
+      await refreshStatus()
       setBusy(false)
     }
   }
@@ -97,10 +96,27 @@ export default function SettingsTab({ userId }: { userId: string }) {
           Authorization: `Bearer ${data.session?.access_token ?? ''}`,
         },
       })
-      if (!response.ok) throw new Error(String(response.status))
+      const payload = (await response.json().catch(() => null)) as
+        | { sent?: number; pruned?: number; error?: string; detail?: string }
+        | null
+
+      if (!response.ok) {
+        const reason = payload?.detail ?? payload?.error ?? `HTTP ${response.status}`
+        setNotice({ kind: 'error', text: `${t.settings.testFailed} ${reason}` })
+        return
+      }
+
+      // A 200 with sent:0 means the function ran but found no device row — the
+      // old code reported that as success, which is why nothing arrived.
+      if (!payload?.sent) {
+        setNotice({ kind: 'error', text: t.settings.testNoDevice })
+        await refreshStatus()
+        return
+      }
+
       setNotice({ kind: 'success', text: t.settings.testSent })
-    } catch {
-      setNotice({ kind: 'error', text: t.settings.testFailed })
+    } catch (err) {
+      setNotice({ kind: 'error', text: `${t.settings.testFailed} ${(err as Error).message}` })
     } finally {
       setBusy(false)
     }
@@ -108,12 +124,26 @@ export default function SettingsTab({ userId }: { userId: string }) {
 
   if (!settings) return <div className="card">{t.common.loading}</div>
 
+  const permissionLabel =
+    status?.permission === 'granted'
+      ? t.settings.permGranted
+      : status?.permission === 'denied'
+        ? t.settings.permDenied
+        : t.settings.permDefault
+
+  const subscriptionLabel = status?.stale
+    ? t.settings.subStale
+    : status?.subscribed
+      ? t.settings.subActive
+      : t.settings.subNone
+
   return (
     <>
       <div className="card">
         <h2>{t.settings.notifications}</h2>
 
         {notice && <div className={`alert ${notice.kind}`}>{notice.text}</div>}
+        {status?.stale && <div className="alert error">{t.settings.staleWarning}</div>}
 
         {!supported ? (
           <div className="alert info">{t.settings.unsupported}</div>
@@ -122,12 +152,20 @@ export default function SettingsTab({ userId }: { userId: string }) {
             <label className="checkbox">
               <input
                 type="checkbox"
-                checked={subscribed}
+                checked={status?.subscribed ?? false}
                 disabled={busy}
                 onChange={(e) => void toggleNotifications(e.target.checked)}
               />
               {t.settings.enable}
             </label>
+
+            <dl className="status">
+              <dt>{t.settings.statusPermission}</dt>
+              <dd>{permissionLabel}</dd>
+              <dt>{t.settings.statusSubscription}</dt>
+              <dd>{subscriptionLabel}</dd>
+            </dl>
+
             <p className="hint">{t.settings.installHint}</p>
           </>
         )}
@@ -193,7 +231,7 @@ export default function SettingsTab({ userId }: { userId: string }) {
           <button
             className="btn secondary"
             type="button"
-            disabled={busy || !subscribed}
+            disabled={busy}
             onClick={() => void sendTest()}
           >
             {t.settings.test}
