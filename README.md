@@ -61,6 +61,12 @@ Then schedule the hourly tick: open [`supabase/schedule.sql`](supabase/schedule.
 replace `YOUR-PROJECT-REF`, store the service-role key in Vault as the file describes,
 and run it in the SQL Editor.
 
+Supabase renamed the API keys: the **publishable** key is the old `anon` key, and the
+**secret** key (`sb_secret_...`) is the old `service_role`. Step 4 wants the secret one.
+The cron job sends it as both `Authorization: Bearer` and `apikey`, because the legacy
+key is a JWT the gateway validates via `Authorization` while the newer format is
+accepted as `apikey`.
+
 The job runs every hour and the function decides whether the current hour matches your
 configured reminder time **in your own timezone**, so DST needs no maintenance.
 

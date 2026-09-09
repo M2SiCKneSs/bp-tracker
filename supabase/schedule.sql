@@ -20,7 +20,13 @@ select cron.schedule(
     url := 'https://ezvzkrnsihxmnzwzvdfi.supabase.co/functions/v1/send-reminder',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
+      -- Both header forms are sent so either key format authenticates: the
+      -- legacy service_role key is a JWT the gateway validates via
+      -- Authorization, while the newer sb_secret_... key is accepted as apikey.
       'Authorization', 'Bearer ' || (
+        select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
+      ),
+      'apikey', (
         select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'
       )
     )
