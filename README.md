@@ -70,6 +70,35 @@ accepted as `apikey`.
 The job runs every hour and the function decides whether the current hour matches your
 configured reminder time **in your own timezone**, so DST needs no maintenance.
 
+### Verifying the reminder chain
+
+Fire the exact request the cron job makes, **as its own execution**:
+
+```sql
+select net.http_post(
+  url := 'https://YOUR-PROJECT-REF.supabase.co/functions/v1/send-reminder',
+  headers := jsonb_build_object(
+    'Content-Type', 'application/json',
+    'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key'),
+    'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'service_role_key')
+  )
+);
+```
+
+Then, in a **separate** execution, read the reply:
+
+```sql
+select id, status_code, left(content, 300) as body from net._http_response order by id desc limit 5;
+```
+
+The two must be separate runs. `pg_net` dispatches only on transaction commit, so a
+`select net.http_post(...); select pg_sleep(4); select ... from net._http_response;`
+block always reads an empty response table — the request has not been sent yet.
+
+A healthy reply is `200` with `{"ran":"...","results":[]}`. Empty `results` is expected
+unless the current hour matches a configured reminder hour. Scheduled runs are recorded
+in `cron.job_run_details`.
+
 ## 4. Deploy to GitHub Pages
 
 1. Create a **public** repo (free Pages requires public) and push this project to `main`.
