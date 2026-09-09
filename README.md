@@ -15,7 +15,7 @@ Everything used here is on a free tier.
 ## 1. Supabase
 
 1. Create a project at [supabase.com](https://supabase.com) (free tier).
-2. **SQL Editor** → paste and run [`supabase/migrations/0001_init.sql`](supabase/migrations/0001_init.sql).
+2. **SQL Editor** → paste and run [`supabase/migrations/20260909000000_init.sql`](supabase/migrations/20260909000000_init.sql).
 3. **Authentication → Users → Add user** → create your single account
    (email + password, "Auto Confirm User" on).
 4. **Authentication → Sign In / Providers** → turn **off** "Allow new users to sign up".
@@ -49,8 +49,13 @@ Deploy the sender ([Supabase CLI](https://supabase.com/docs/guides/cli) required
 supabase login
 supabase link --project-ref YOUR-PROJECT-REF
 supabase secrets set VAPID_PUBLIC_KEY=...  VAPID_PRIVATE_KEY=...  VAPID_SUBJECT=mailto:you@example.com
-supabase functions deploy send-reminder
+supabase functions deploy send-reminder --use-api
 ```
+
+`--use-api` bundles the function on Supabase's side instead of in a local Docker
+container. On Windows the Docker path is worth avoiding: the CLI passes a Windows
+path as a container volume spec and Docker rejects it (`invalid volume
+specification`).
 
 Then schedule the hourly tick: open [`supabase/schedule.sql`](supabase/schedule.sql),
 replace `YOUR-PROJECT-REF`, store the service-role key in Vault as the file describes,
