@@ -9,7 +9,20 @@ const VAPID_PUBLIC_KEY = Deno.env.get('VAPID_PUBLIC_KEY')!
 const VAPID_PRIVATE_KEY = Deno.env.get('VAPID_PRIVATE_KEY')!
 const VAPID_SUBJECT = Deno.env.get('VAPID_SUBJECT') ?? 'mailto:reminder@example.com'
 
-webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+// A malformed key would otherwise throw at module load, which the platform
+// surfaces only as an opaque WORKER_ERROR 500. Capture it instead and report
+// something actionable from the handler.
+let vapidError: string | null = null
+try {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)
+} catch (err) {
+  vapidError =
+    `${(err as Error).message} ` +
+    `(public key ${VAPID_PUBLIC_KEY?.length ?? 0} chars, expected 87; ` +
+    `private key ${VAPID_PRIVATE_KEY?.length ?? 0} chars, expected 43; ` +
+    `subject "${VAPID_SUBJECT}")`
+  console.error('VAPID configuration invalid:', vapidError)
+}
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -121,6 +134,8 @@ Deno.serve(async (request) => {
       status,
       headers: { ...CORS, 'Content-Type': 'application/json' },
     })
+
+  if (vapidError) return json({ error: 'vapid_misconfigured', detail: vapidError }, 500)
 
   try {
     const isTest = new URL(request.url).searchParams.get('test') === '1'
